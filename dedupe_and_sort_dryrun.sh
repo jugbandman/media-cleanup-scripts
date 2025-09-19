@@ -1,49 +1,50 @@
 #!/bin/bash
 set -euo pipefail
 
-# ---- PATHS (edit if needed)
+# ---- CONFIG: Update for your environment ----
 RECOVERY="/Volumes/2TB Ext Mac/Organized"
 LIB_MUSIC_CONCERTS="/Volumes/My Book Duo/ServerMedia/Videos/Music_Concerts"
 LIB_PHISH="/Volumes/My Book Duo/ServerMedia/Videos/Phish_Video"
 QUARANTINE="/Volumes/2TB Ext Mac/_Quarantine"
 STAGING="/Volumes/2TB Ext Mac/_Newly_Saved"
-LOG="/Volumes/2TB Ext Mac/_dedupe_sort_$(date +%Y%m%d_%H%M%S).log"
+LOG="/Volumes/2TB Ext Mac/_dedupe_sort_DRYRUN_$(date +%Y%m%d_%H%M%S).log"
+# create log file up front and echo the path for sanity
+mkdir -p "$(dirname "$LOG")"
+: > "$LOG"
+echo "LOG FILE: $LOG" | tee -a "$LOG"
 
-# ---- EXTENSIONS we care about
 EXTS='mp4|mkv|mov|m4v|avi'
 
-# ---- dependency checks (jdupes, ffprobe, mediainfo)
+# ---- Dependencies ----
 need() { command -v "$1" >/dev/null || { echo "Missing: $1"; exit 1; }; }
 need ffprobe; need jdupes; need mediainfo
 
 mkdir -p "$QUARANTINE" "$STAGING"
 
-echo "== Quarantine corrupt files ==" | tee -a "$LOG"
-# Find & move corrupt videos from RECOVERY to QUARANTINE
-# (ffprobe returns non-zero on broken containers/streams)
+echo "== DRY RUN START ==" | tee -a "$LOG"
+
+# 1. Corrupt file check (no moving, just log)
+echo "== Checking for corrupt files in RECOVERY ==" | tee -a "$LOG"
 while IFS= read -r f; do
   if ! ffprobe -v error -select_streams v:0 -show_entries stream=codec_name \
         -of csv=p=0 "$f" > /dev/null 2>&1; then
-    echo "CORRUPT >> $f" | tee -a "$LOG"
-    mv -n "$f" "$QUARANTINE/"
+    echo "WOULD QUARANTINE >> $f" | tee -a "$LOG"
   fi
 done < <(find "$RECOVERY" -type f -iregex ".*\.($EXTS)$")
 
-echo "== Delete exact dupes from RECOVERY (keep Library) ==" | tee -a "$LOG"
-# Compare RECOVERY against both library roots; delete dupes only from RECOVERY
-jdupes -r -dN "$RECOVERY" "$LIB_MUSIC_CONCERTS" "$LIB_PHISH" | tee -a "$LOG"
+# 2. Exact duplicate check (no deletion, just log)
+echo "== Checking for exact duplicates (Library vs Recovery) ==" | tee -a "$LOG"
+jdupes -r "$RECOVERY" "$LIB_MUSIC_CONCERTS" "$LIB_PHISH" | tee -a "$LOG"
 
-echo "== Stage remaining unique files from RECOVERY ==" | tee -a "$LOG"
-# Move what’s left in RECOVERY to a staging area
+# 3. Unique file staging (no moving, just log)
+echo "== Checking unique files in RECOVERY ==" | tee -a "$LOG"
 while IFS= read -r f; do
-  rel="$(basename "$f")"
-  echo "STAGE >> $f" | tee -a "$LOG"
-  mv -n "$f" "$STAGING/$rel"
+  echo "WOULD STAGE >> $f" | tee -a "$LOG"
 done < <(find "$RECOVERY" -type f -iregex ".*\.($EXTS)$")
 
-echo "== Auto-sort staged files to artist folders ==" | tee -a "$LOG"
+# 4. Auto-sort preview
+echo "== Preview auto-sort destinations ==" | tee -a "$LOG"
 
-# Map of artist keywords -> destination folder name (expandable)
 declare -A MAP=(
   ["phish"]="Phish"
   ["dead & company"]="Dead & Company"
@@ -68,12 +69,10 @@ declare -A MAP=(
 
 normalize() { echo "$1" | tr '[:upper:]' '[:lower:]'; }
 
-route_file() {
+route_file_preview() {
   local f="$1"
   local lcf="$(normalize "$f")"
   local destBase="$LIB_MUSIC_CONCERTS"
-
-  # Special-case Phish into the Phish_Video tree if present
   if [[ "$lcf" =~ phish ]]; then destBase="$LIB_PHISH"; fi
 
   local artistFolder=""
@@ -85,35 +84,16 @@ route_file() {
   done
 
   if [[ -z "$artistFolder" ]]; then
-    # Couldn’t detect artist — leave in staging and log
-    echo "UNMATCHED >> $(basename "$f")" | tee -a "$LOG"
+    echo "UNMATCHED (would stay in staging) >> $(basename "$f")" | tee -a "$LOG"
     return
   fi
 
-  local dest="$destBase/$artistFolder"
-  mkdir -p "$dest"
-
-  # Don’t overwrite; if exists, append a counter
-  local base="$(basename "$f")"
-  local name="${base%.*}"
-  local ext="${base##*.}"
-  local target="$dest/$base"
-  local n=1
-  while [[ -e "$target" ]]; do
-    target="$dest/${name} ($n).$ext"
-    ((n++))
-  done
-
-  echo "MOVE >> $f  ==>  $target" | tee -a "$LOG"
-  mv -n "$f" "$target"
+  echo "WOULD MOVE >> $(basename "$f") --> $destBase/$artistFolder" | tee -a "$LOG"
 }
 
-# Walk staging and route
 while IFS= read -r f; do
-  route_file "$f"
+  route_file_preview "$f"
 done < <(find "$STAGING" -type f -iregex ".*\.($EXTS)$")
 
-echo "== Done =="
-echo "Quarantine: $QUARANTINE"
-echo "Unmatched (left in staging): $STAGING"
-echo "Log: $LOG"
+echo "== DRY RUN COMPLETE =="
+echo "Log file: $LOG"
